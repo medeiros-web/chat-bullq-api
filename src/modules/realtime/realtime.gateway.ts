@@ -91,6 +91,21 @@ export class RealtimeGateway
 
       await this.presence.setOnline(client.data.userId, orgId);
 
+      // Mark auth as complete. Anything that depends on client.data.role /
+      // channelIds (like join:conversation permission checks) MUST wait for
+      // this flag — otherwise it sees undefined and rejects the join.
+      client.data.authReady = true;
+
+      // Tell the client auth/membership is fully resolved. The client uses
+      // this signal to (re)join per-conversation rooms safely. Without this,
+      // a fast emit('join:conversation') racing the async handshake fails
+      // permission check and the user silently misses message:new events.
+      client.emit('ready', {
+        userId: client.data.userId,
+        organizationId: orgId,
+        channelIds: client.data.channelIds ?? [],
+      });
+
       this.logger.log(`Client connected: ${client.data.userId} (org: ${orgId})`);
     } catch {
       client.disconnect();
@@ -131,16 +146,50 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { conversationId: string },
   ) {
+    // Auth handshake (handleConnection) is async — Postgres lookup for
+    // org membership + channel grants. If the client races the handshake
+    // and emits join:conversation early, client.data.role/channelIds are
+    // still undefined and the permission check below silently rejects
+    // (undefined.includes(...) → undefined → falsy). Wait up to 2s for
+    // auth to complete before evaluating.
+    if (!client.data.authReady) {
+      const ready = await this.waitForAuthReady(client, 2000);
+      if (!ready) {
+        this.logger.warn(
+          `join:conversation rejected: auth never completed for socket ${client.id}`,
+        );
+        client.emit('join:conversation:error', {
+          conversationId: data.conversationId,
+          reason: 'auth-timeout',
+        });
+        return;
+      }
+    }
+
     if (!this.channelAccess.isBypassRole(client.data.role)) {
       const conv = await this.prisma.conversation.findUnique({
         where: { id: data.conversationId },
         select: { channelId: true, organizationId: true },
       });
-      if (
-        !conv ||
-        conv.organizationId !== client.data.organizationId ||
-        !(client.data.channelIds as string[] | undefined)?.includes(conv.channelId)
-      ) {
+      if (!conv || conv.organizationId !== client.data.organizationId) {
+        this.logger.warn(
+          `join:conversation rejected: conv ${data.conversationId} not in org ${client.data.organizationId}`,
+        );
+        client.emit('join:conversation:error', {
+          conversationId: data.conversationId,
+          reason: 'org-mismatch',
+        });
+        return;
+      }
+      const channelIds = (client.data.channelIds as string[] | undefined) ?? [];
+      if (!channelIds.includes(conv.channelId)) {
+        this.logger.warn(
+          `join:conversation rejected: user ${client.data.userId} has no grant on channel ${conv.channelId}`,
+        );
+        client.emit('join:conversation:error', {
+          conversationId: data.conversationId,
+          reason: 'no-channel-grant',
+        });
         return;
       }
     }
@@ -151,6 +200,26 @@ export class RealtimeGateway
       client.data.organizationId,
       data.conversationId,
     );
+    client.emit('join:conversation:ack', {
+      conversationId: data.conversationId,
+    });
+  }
+
+  private waitForAuthReady(
+    client: Socket,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    if (client.data.authReady) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        if (client.data.authReady) return resolve(true);
+        if (!client.connected) return resolve(false);
+        if (Date.now() - start >= timeoutMs) return resolve(false);
+        setTimeout(tick, 50);
+      };
+      tick();
+    });
   }
 
   @SubscribeMessage('leave:conversation')
