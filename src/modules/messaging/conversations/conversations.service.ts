@@ -260,6 +260,93 @@ export class ConversationsService {
     return { engaged: true };
   }
 
+  /**
+   * Manually pin a specific AI agent to this conversation and immediately
+   * engage it. Use case: human says "vou te passar pra Lívia" via manual
+   * message — the system can't infer that intent from text, so the operator
+   * picks the agent in the UI and we (a) flip activeAgentId, (b) clear any
+   * paused state (force AI on for this conversation), (c) fire the runner.
+   */
+  async setActiveAgent(
+    id: string,
+    organizationId: string,
+    agentId: string,
+    actorId: string,
+    access: ChannelAccess = 'ALL',
+  ): Promise<{ engaged: boolean; reason?: string; agentName?: string }> {
+    const conversation = await this.findOne(id, organizationId, access);
+
+    const agent = await this.prisma.aiAgent.findFirst({
+      where: { id: agentId, organizationId, isActive: true, deletedAt: null },
+      select: { id: true, name: true },
+    });
+    if (!agent) {
+      throw new NotFoundException('Agent not found or not active in this org');
+    }
+
+    // Pin agent + force AI on for this conversation (override any pause).
+    const updated = await this.prisma.conversation.update({
+      where: { id },
+      data: {
+        activeAgentId: agentId,
+        aiEnabled: true,
+        aiDisabledBy: null,
+        aiDisabledAt: null,
+      },
+    });
+
+    await this.prisma.conversationAuditLog.create({
+      data: {
+        conversationId: id,
+        actorId,
+        action: 'AI_AGENT_SET',
+        fromValue: conversation.activeAgentId,
+        toValue: agentId,
+        metadata: { agentName: agent.name },
+      },
+    });
+
+    this.broadcastUpdate(updated as Conversation);
+    this.realtimeGateway.emitToConversation(id, 'conversation:ai-toggle', {
+      conversationId: id,
+      aiEnabled: true,
+      activeAgentId: agentId,
+      reason: 'agent-pinned',
+    });
+
+    // Pick latest inbound (preferred) or fallback to any latest message.
+    const triggerMessage =
+      (await this.prisma.message.findFirst({
+        where: { conversationId: id, direction: 'INBOUND' },
+        orderBy: { createdAt: 'desc' },
+      })) ??
+      (await this.prisma.message.findFirst({
+        where: { conversationId: id },
+        orderBy: { createdAt: 'desc' },
+      }));
+
+    if (!triggerMessage) {
+      return {
+        engaged: false,
+        reason: 'no-messages',
+        agentName: agent.name,
+      };
+    }
+
+    this.agentRunner
+      .run({
+        conversation: updated as Conversation,
+        triggerMessage,
+      })
+      .catch((err) =>
+        this.logger.error(
+          `setActiveAgent run failed for conv ${id}: ${err?.message ?? err}`,
+        ),
+      );
+
+    return { engaged: true, agentName: agent.name };
+  }
+
   async close(
     id: string,
     organizationId: string,

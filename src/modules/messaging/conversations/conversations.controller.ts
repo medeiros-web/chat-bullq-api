@@ -148,6 +148,27 @@ export class ConversationsController {
     return this.service.engageAi(id, orgId, userId, access);
   }
 
+  @Post(':id/ai/set-agent')
+  @ApiOperation({
+    summary:
+      'Pin a specific AI agent to this conversation and immediately engage it. Sets activeAgentId + aiEnabled=true + fires the runner. Use case: human picks Lívia/André via UI when delegating manually.',
+  })
+  setActiveAgent(
+    @Param('id') id: string,
+    @CurrentOrg('id') orgId: string,
+    @CurrentUser('id') userId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+    @Body() body: { agentId: string },
+  ) {
+    return this.service.setActiveAgent(
+      id,
+      orgId,
+      body.agentId,
+      userId,
+      access,
+    );
+  }
+
   @Post(':id/close')
   @ApiOperation({ summary: 'Close a conversation' })
   close(
