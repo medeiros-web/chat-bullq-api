@@ -142,6 +142,11 @@ model Organization {
   aiOutOfHoursMessage  String? @map("ai_out_of_hours_message")
   aiAutoDisableOnHuman Boolean @default(true) @map("ai_auto_disable_on_human")
   aiMonthlyTokenCap    Int?    @map("ai_monthly_token_cap")
+  /// Notas livres do negócio injetadas no system prompt de TODOS os
+  /// agentes da org. Use pra info que muda com frequência e que vale
+  /// pra qualquer fluxo (vendas/suporte/CS): regras de entrega, horários
+  /// de live, política de reembolso, talking points atuais, etc.
+  aiBusinessNotes      String? @map("ai_business_notes") @db.Text
 
   members       UserOrganization[]
   channels      Channel[]

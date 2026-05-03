@@ -68,4 +68,15 @@ export class UpdateOrganizationDto {
   @IsInt()
   @Min(0)
   aiMonthlyTokenCap?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Notas livres que entram no system prompt de TODOS os agentes da org. Use pra info que muda com frequência (regras de entrega de isca, horários de live, política de reembolso, talking points atuais). Empty = sem notas.',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  @MaxLength(4000)
+  aiBusinessNotes?: string | null;
 }
