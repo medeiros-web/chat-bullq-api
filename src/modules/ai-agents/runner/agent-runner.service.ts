@@ -15,6 +15,7 @@ import { ToolContext } from '../tools/tool.types';
 import { HttpToolExecutorService } from '../tools/http-tool-executor.service';
 import { SqlToolExecutorService } from '../tools/sql-tool-executor.service';
 import { PromptBuilderService } from './prompt-builder.service';
+import { CatalogSyncService } from './catalog-sync.service';
 
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_RECENT_MESSAGES = 30;
@@ -43,6 +44,7 @@ export class AiAgentRunnerService {
     private readonly promptBuilder: PromptBuilderService,
     private readonly httpExecutor: HttpToolExecutorService,
     private readonly sqlExecutor: SqlToolExecutorService,
+    private readonly catalogSync: CatalogSyncService,
   ) {}
 
   async run({
@@ -83,20 +85,9 @@ export class AiAgentRunnerService {
           },
         }),
         // Compact product list for the cacheable system prompt block.
+        // Source of truth: Trivapp /api/v1/catalog (5min in-memory cache).
         // Skill getProductPitch(slug) fetches full details on demand.
-        this.prisma.product.findMany({
-          where: {
-            organizationId: conversation.organizationId,
-            isActive: true,
-          },
-          orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
-          select: {
-            slug: true,
-            name: true,
-            category: true,
-            shortLine: true,
-          },
-        }),
+        this.catalogSync.getCompactCatalog(conversation.organizationId),
       ]);
 
     const run = await this.prisma.aiAgentRun.create({

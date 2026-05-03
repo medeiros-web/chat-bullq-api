@@ -5,6 +5,7 @@ import { LlmModule } from './llm/llm.module';
 import { ToolsModule } from './tools/tools.module';
 import { PromptBuilderService } from './runner/prompt-builder.service';
 import { AiAgentRunnerService } from './runner/agent-runner.service';
+import { CatalogSyncService } from './runner/catalog-sync.service';
 import { AgentRouterService } from './router/agent-router.service';
 import { AgentsService } from './agents/agents.service';
 import { AgentsController } from './agents/agents.controller';
@@ -22,6 +23,7 @@ import { AiCatalogController } from './catalog/catalog.controller';
     AgentsService,
     ToolsCatalogService,
     SkillsCatalogService,
+    CatalogSyncService,
   ],
   exports: [AiAgentRunnerService, AgentRouterService],
 })

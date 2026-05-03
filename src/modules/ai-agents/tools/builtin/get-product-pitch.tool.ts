@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from '../../../../database/prisma.service';
+import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
 import { AiTool, ToolContext, ToolResult } from '../tool.types';
 
 /**
@@ -8,6 +9,15 @@ import { AiTool, ToolContext, ToolResult } from '../tool.types';
  * system prompt and call this skill with a slug when actually
  * recommending — keeps the prompt small while letting the agent
  * pull authoritative copy on demand instead of inventing.
+ *
+ * Backend source: Trivapp (members area). Each tenant in Trivapp owns
+ * its sales offers under /api/v1/catalog/:slug. Auth via
+ * x-admin-api-key + x-tenant-id headers (same pattern admin-actions).
+ *
+ * Env required:
+ * - MEMBERS_TRIVAPP_URL (default https://members.bravy.school)
+ * - MEMBERS_ADMIN_KEY
+ * - MEMBERS_TENANT_BRAVY (TODO: per-org mapping when multi-tenant)
  */
 @Injectable()
 export class GetProductPitchTool implements AiTool {
@@ -26,12 +36,12 @@ export class GetProductPitchTool implements AiTool {
         description:
           'Slug do produto (ex: "maestria"). Lista de slugs disponível no Catálogo do system prompt.',
         minLength: 1,
-        maxLength: 60,
+        maxLength: 80,
       },
     },
   };
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly config: ConfigService) {}
 
   async execute(
     input: Record<string, unknown>,
@@ -39,48 +49,62 @@ export class GetProductPitchTool implements AiTool {
   ): Promise<ToolResult> {
     const slug = String(input.slug ?? '').trim().toLowerCase();
     if (!slug) {
-      return {
-        output: { ok: false, error: 'slug obrigatório' },
-      };
+      return { output: { ok: false, error: 'slug obrigatório' } };
     }
 
-    const product = await this.prisma.product.findUnique({
-      where: {
-        organizationId_slug: {
-          organizationId: ctx.organizationId,
-          slug,
-        },
-      },
-    });
+    const baseUrl =
+      this.config.get<string>('MEMBERS_TRIVAPP_URL') ??
+      'https://members.bravy.school';
+    const apiKey = this.config.get<string>('MEMBERS_ADMIN_KEY');
+    const tenantId = this.config.get<string>('MEMBERS_TENANT_BRAVY');
 
-    if (!product || !product.isActive) {
+    if (!apiKey || !tenantId) {
+      this.logger.warn(
+        'Trivapp credentials missing (MEMBERS_ADMIN_KEY / MEMBERS_TENANT_BRAVY)',
+      );
       return {
         output: {
           ok: false,
-          error: `Produto "${slug}" não encontrado ou inativo. Confira a lista de slugs no Catálogo.`,
+          error: 'Trivapp não configurado no servidor — fale com o admin',
         },
       };
     }
 
-    this.logger.log(
-      `getProductPitch served ${slug} (org=${ctx.organizationId})`,
-    );
-
-    return {
-      output: {
-        ok: true,
-        product: {
-          slug: product.slug,
-          name: product.name,
-          category: product.category,
-          shortLine: product.shortLine,
-          pitch: product.pitch,
-          price: product.price,
-          paymentLink: product.paymentLink,
-          targetAudience: product.targetAudience,
-          differentiators: product.differentiators,
+    try {
+      const resp = await axios.get(`${baseUrl}/api/v1/catalog/${slug}`, {
+        headers: {
+          'x-admin-api-key': apiKey,
+          'x-tenant-id': tenantId,
+          'Content-Type': 'application/json',
         },
-      },
-    };
+        timeout: 10_000,
+      });
+
+      this.logger.log(
+        `getProductPitch served ${slug} (org=${ctx.organizationId})`,
+      );
+
+      return { output: { ok: true, product: resp.data } };
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.message ?? err?.message;
+      this.logger.warn(
+        `getProductPitch failed for ${slug}: ${status ?? '?'} ${detail}`,
+      );
+      if (status === 404) {
+        return {
+          output: {
+            ok: false,
+            error: `Produto "${slug}" não encontrado no catálogo. Confira a lista de slugs no Catálogo.`,
+          },
+        };
+      }
+      return {
+        output: {
+          ok: false,
+          error: `Falha ao consultar catálogo: ${detail}`,
+        },
+      };
+    }
   }
 }

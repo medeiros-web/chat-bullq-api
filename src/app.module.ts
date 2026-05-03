@@ -21,7 +21,9 @@ import { ChannelAccessModule } from './modules/iam/channel-access/channel-access
 import { AiAgentsModule } from './modules/ai-agents/ai-agents.module';
 import { InboxViewsModule } from './modules/inbox-views/inbox-views.module';
 import { PipelinesModule } from './modules/pipelines/pipelines.module';
-import { ProductsModule } from './modules/products/products.module';
+// ProductsModule removido — catálogo agora vive no Trivapp e é consumido
+// via skill HTTP getProductPitch + CatalogSyncService. Tabela `products`
+// fica órfã no DB (cleanup futuro). Não importar aqui.
 import redisConfig from './config/redis.config';
 
 @Module({
@@ -57,7 +59,6 @@ import redisConfig from './config/redis.config';
     AiAgentsModule,
     InboxViewsModule,
     PipelinesModule,
-    ProductsModule,
   ],
 })
 export class AppModule {}
