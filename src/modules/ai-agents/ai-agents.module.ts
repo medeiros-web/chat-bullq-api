@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../../database/prisma.module';
 import { LlmModule } from './llm/llm.module';
 import { ToolsModule } from './tools/tools.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { PromptBuilderService } from './runner/prompt-builder.service';
 import { AiAgentRunnerService } from './runner/agent-runner.service';
 import { CatalogSyncService } from './runner/catalog-sync.service';
@@ -14,7 +15,7 @@ import { SkillsCatalogService } from './catalog/skills.service';
 import { AiCatalogController } from './catalog/catalog.controller';
 
 @Module({
-  imports: [ConfigModule, PrismaModule, LlmModule, ToolsModule],
+  imports: [ConfigModule, PrismaModule, LlmModule, ToolsModule, NotificationsModule],
   controllers: [AgentsController, AiCatalogController],
   providers: [
     PromptBuilderService,

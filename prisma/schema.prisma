@@ -87,6 +87,7 @@ enum NotificationType {
   SLA_BREACH
   MENTION
   SYSTEM
+  AI_TOOL_FAILURE
 }
 
 // ─── Core: Auth + Multi-tenancy ──────────────────

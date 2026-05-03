@@ -6,6 +6,7 @@ import {
   Message,
   AiSkill,
   AiTool,
+  NotificationType,
 } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { LlmService } from '../llm/llm.service';
@@ -16,6 +17,8 @@ import { HttpToolExecutorService } from '../tools/http-tool-executor.service';
 import { SqlToolExecutorService } from '../tools/sql-tool-executor.service';
 import { PromptBuilderService } from './prompt-builder.service';
 import { CatalogSyncService } from './catalog-sync.service';
+import { NotificationsService } from '../../notifications/notifications.service';
+import { isToolCallFailure } from '../agents/agents.service';
 
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_RECENT_MESSAGES = 30;
@@ -45,6 +48,7 @@ export class AiAgentRunnerService {
     private readonly httpExecutor: HttpToolExecutorService,
     private readonly sqlExecutor: SqlToolExecutorService,
     private readonly catalogSync: CatalogSyncService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async run({
@@ -352,40 +356,62 @@ export class AiAgentRunnerService {
       let errorMessage: string | undefined;
       let finalAction: string | undefined;
 
-      try {
-        const customSkill = customSkillsByName.get(call.name);
-        if (customSkill && customSkill.tool) {
-          const result =
-            customSkill.source === 'SQL'
-              ? await this.sqlExecutor.execute(
-                  customSkill,
-                  customSkill.tool,
-                  call.arguments,
-                  ctx,
-                )
-              : await this.httpExecutor.execute(
-                  customSkill,
-                  customSkill.tool,
-                  call.arguments,
-                  ctx,
-                );
-          output = result.output;
-          finalAction = result.finalAction;
-        } else if (this.registry.has(call.name)) {
-          // Built-in.
-          const tool = this.registry.get(call.name);
-          const result = await tool.execute(call.arguments, ctx);
-          output = result.output;
-          finalAction = result.finalAction;
-        } else {
-          throw new Error(`Unknown tool: ${call.name}`);
+      // Run + auto-retry on transient failures only. We retry once with a
+      // short backoff when the error looks transient (network, timeout,
+      // 5xx upstream). 4xx and logic errors aren't retried because they
+      // won't fix themselves — better to let the LLM see the error and
+      // decide (transferToHuman, etc).
+      let attempts = 0;
+      const maxAttempts = 2;
+      while (attempts < maxAttempts) {
+        attempts++;
+        errorMessage = undefined;
+        try {
+          const customSkill = customSkillsByName.get(call.name);
+          if (customSkill && customSkill.tool) {
+            const result =
+              customSkill.source === 'SQL'
+                ? await this.sqlExecutor.execute(
+                    customSkill,
+                    customSkill.tool,
+                    call.arguments,
+                    ctx,
+                  )
+                : await this.httpExecutor.execute(
+                    customSkill,
+                    customSkill.tool,
+                    call.arguments,
+                    ctx,
+                  );
+            output = result.output;
+            finalAction = result.finalAction;
+          } else if (this.registry.has(call.name)) {
+            // Built-in.
+            const tool = this.registry.get(call.name);
+            const result = await tool.execute(call.arguments, ctx);
+            output = result.output;
+            finalAction = result.finalAction;
+          } else {
+            throw new Error(`Unknown tool: ${call.name}`);
+          }
+        } catch (err: any) {
+          errorMessage = err?.message ?? String(err);
+          output = { ok: false, error: errorMessage };
+          this.logger.error(
+            `Tool ${call.name} failed (attempt ${attempts}/${maxAttempts}): ${errorMessage}`,
+          );
         }
-      } catch (err: any) {
-        errorMessage = err?.message ?? String(err);
-        output = { ok: false, error: errorMessage };
-        this.logger.error(
-          `Tool ${call.name} failed: ${errorMessage}`,
-        );
+
+        // Decide retry. If the call succeeded logically, exit the loop.
+        // For failures, retry only when transient — don't punish the user
+        // with a slower response for a 404 that won't recover.
+        const failed =
+          !!errorMessage ||
+          isToolCallFailure({ error: errorMessage ?? null, output });
+        if (!failed) break;
+        if (attempts >= maxAttempts) break;
+        if (!isTransientFailure(errorMessage, output)) break;
+        await new Promise((r) => setTimeout(r, 500));
       }
 
       await this.prisma.aiToolCall.create({
@@ -399,6 +425,23 @@ export class AiAgentRunnerService {
         },
       });
 
+      // Surface silent failures: notify the org's humans whenever a tool
+      // call returns ok:false / status>=400 OR an exception was thrown.
+      // Without this, the Lívia case happens — IA transfers and nobody sees.
+      if (isToolCallFailure({ error: errorMessage ?? null, output })) {
+        this.notifyToolFailure({
+          ctx,
+          toolName: call.name,
+          input: call.arguments,
+          output,
+          errorMessage,
+        }).catch((e) =>
+          this.logger.warn(
+            `Failed to dispatch tool-failure notification: ${e?.message ?? e}`,
+          ),
+        );
+      }
+
       results.push({
         toolCallId: call.id,
         toolName: call.name,
@@ -408,6 +451,56 @@ export class AiAgentRunnerService {
     }
 
     return results;
+  }
+
+  /**
+   * Notifies every member of the org that a skill produced a failure.
+   * Background dispatch — a notification miss shouldn't break the run.
+   * Body summarizes the skill, the conversation, and the error so the
+   * human can act without digging into the runs feed first.
+   */
+  private async notifyToolFailure(args: {
+    ctx: ToolContext;
+    toolName: string;
+    input: unknown;
+    output: unknown;
+    errorMessage?: string;
+  }) {
+    const { ctx, toolName, input, output, errorMessage } = args;
+    const summary =
+      errorMessage ??
+      this.summarizeFailureOutput(output) ??
+      'Erro desconhecido na skill';
+
+    await this.notifications.notifyOrgAgents({
+      organizationId: ctx.organizationId,
+      type: NotificationType.AI_TOOL_FAILURE,
+      title: `Skill ${toolName} falhou`,
+      body: `Conversa atendida pela IA teve falha em ${toolName}: ${summary}`,
+      data: {
+        runId: ctx.runId,
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+        toolName,
+        input,
+        output,
+        errorMessage: errorMessage ?? null,
+      },
+    });
+  }
+
+  /** Pulls a human-readable error string from the executor's output JSON. */
+  private summarizeFailureOutput(output: unknown): string | null {
+    if (!output || typeof output !== 'object') return null;
+    const o = output as Record<string, any>;
+    if (typeof o.error === 'string') return o.error;
+    const body = o.body;
+    if (body && typeof body === 'object') {
+      if (typeof body.message === 'string') return body.message;
+      if (typeof body.error === 'string') return body.error;
+    }
+    if (Number.isFinite(Number(o.status))) return `HTTP ${o.status}`;
+    return null;
   }
 
   /**
@@ -504,4 +597,43 @@ export class AiAgentRunnerService {
 
 interface LlmMessageWithToolCalls extends LlmMessage {
   toolCalls?: LlmToolCall[];
+}
+
+/**
+ * Tells whether a tool failure is worth retrying. Transient = upstream
+ * blip the second attempt might dodge: connection drops, timeouts,
+ * 5xx HTTP responses. Definitive failures (4xx, validation, missing
+ * resource) won't recover so we bail immediately and let the agent
+ * react.
+ */
+function isTransientFailure(
+  errorMessage: string | undefined,
+  output: unknown,
+): boolean {
+  // Exception thrown — check message for known transient signatures.
+  if (errorMessage) {
+    const m = errorMessage.toLowerCase();
+    if (
+      m.includes('timeout') ||
+      m.includes('econnreset') ||
+      m.includes('econnrefused') ||
+      m.includes('etimedout') ||
+      m.includes('socket hang up') ||
+      m.includes('network') ||
+      m.includes('fetch failed')
+    ) {
+      return true;
+    }
+    // status 5xx baked into the message
+    if (/\b(50\d|429)\b/.test(m)) return true;
+    return false;
+  }
+  // Logical failure — retry only if status is 5xx or 429.
+  if (output && typeof output === 'object') {
+    const status = Number((output as any).status);
+    if (Number.isFinite(status) && (status >= 500 || status === 429)) {
+      return true;
+    }
+  }
+  return false;
 }

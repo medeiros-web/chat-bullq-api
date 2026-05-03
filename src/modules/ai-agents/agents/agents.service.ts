@@ -445,23 +445,77 @@ export class AgentsService {
     };
   }
 
-  /** Run feed for the org, optionally filtered by a single agent. */
+  /**
+   * Run feed for the org with rich filters used by the "Execuções" tab.
+   * Returns each run with its tool calls (full input/output/error) so the
+   * UI can flag silent failures — tools that returned ok:false or status>=400
+   * even when the catch-block error column is null.
+   */
   async listOrgRuns(
     organizationId: string,
-    options: { agentId?: string; limit?: number },
+    options: {
+      agentId?: string;
+      period?: '24h' | '7d' | '30d' | 'all';
+      hasErrors?: boolean;
+      status?: 'RUNNING' | 'COMPLETED' | 'FAILED' | 'SKIPPED';
+      finalAction?: string;
+      limit?: number;
+      cursor?: string;
+    },
   ) {
-    return this.prisma.aiAgentRun.findMany({
+    const since =
+      options.period && options.period !== 'all'
+        ? this.windowStart(options.period)
+        : undefined;
+
+    const runs = await this.prisma.aiAgentRun.findMany({
       where: {
         organizationId,
         ...(options.agentId ? { agentId: options.agentId } : {}),
+        ...(since ? { startedAt: { gte: since } } : {}),
+        ...(options.status ? { status: options.status } : {}),
+        ...(options.finalAction
+          ? options.finalAction === 'NONE'
+            ? { finalAction: null }
+            : { finalAction: options.finalAction as any }
+          : {}),
       },
       orderBy: { startedAt: 'desc' },
-      take: options.limit ?? 50,
+      take: Math.min(options.limit ?? 50, 200),
+      ...(options.cursor
+        ? { cursor: { id: options.cursor }, skip: 1 }
+        : {}),
       include: {
         agent: { select: { id: true, name: true, kind: true } },
-        toolCalls: { select: { toolName: true } },
+        toolCalls: {
+          select: {
+            id: true,
+            toolName: true,
+            input: true,
+            output: true,
+            error: true,
+            durationMs: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'asc' },
+        },
       },
     });
+
+    // Compute hasFailedToolCall flag client-side and optionally drop runs
+    // without failures when the user filtered for "só com erros".
+    const enriched = runs.map((r) => ({
+      ...r,
+      failedToolCalls: r.toolCalls.filter((tc) => isToolCallFailure(tc)).length,
+      hasFailedToolCalls: r.toolCalls.some((tc) => isToolCallFailure(tc)),
+    }));
+
+    if (options.hasErrors) {
+      return enriched.filter(
+        (r) => r.hasFailedToolCalls || r.status === 'FAILED',
+      );
+    }
+    return enriched;
   }
 
   // ─── private helpers ────────────────────────────────────────────
@@ -523,4 +577,27 @@ function percentile(sorted: number[], p: number): number | null {
   if (sorted.length === 0) return null;
   const idx = Math.min(Math.floor(sorted.length * p), sorted.length - 1);
   return sorted[idx];
+}
+
+/**
+ * A tool call is considered failed if either:
+ *   1. the executor caught an exception (error != null), or
+ *   2. the output JSON signals a logical failure — `ok:false` or
+ *      `status >= 400`. HTTP/SQL custom skills return shapes like
+ *      `{ ok: true | false, body, status }` and a 404 from the upstream
+ *      API does NOT throw, so the catch-block error column stays null.
+ *      Without checking the output shape we'd miss the very class of
+ *      failures the UI exists to surface.
+ */
+export function isToolCallFailure(tc: {
+  error: string | null;
+  output: unknown;
+}): boolean {
+  if (tc.error) return true;
+  const out = tc.output as Record<string, any> | null;
+  if (!out || typeof out !== 'object') return false;
+  if (out.ok === false) return true;
+  const status = Number(out.status);
+  if (Number.isFinite(status) && status >= 400) return true;
+  return false;
 }

@@ -105,16 +105,26 @@ export class AgentsController {
   @Get('runs/feed')
   @ApiOperation({
     summary:
-      'Org-wide run feed for the Jarvis dashboard. Filterable by agent.',
+      'Org-wide run feed for the Jarvis "Execuções" tab. Returns runs with full tool-call history (input/output/error) so the UI can surface silent failures (HTTP 4xx/5xx, ok:false). Filterable by period, agent, status, finalAction and "only with errors".',
   })
   feed(
     @CurrentOrg('id') orgId: string,
     @Query('agentId') agentId?: string,
+    @Query('period') period?: string,
+    @Query('status') status?: string,
+    @Query('finalAction') finalAction?: string,
+    @Query('hasErrors') hasErrors?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
   ) {
     return this.service.listOrgRuns(orgId, {
       agentId,
+      period: this.parsePeriodAll(period),
+      status: this.parseRunStatus(status),
+      finalAction,
+      hasErrors: hasErrors === '1' || hasErrors === 'true',
       limit: limit ? Math.min(parseInt(limit, 10) || 50, 200) : 50,
+      cursor: cursor || undefined,
     });
   }
 
@@ -144,5 +154,17 @@ export class AgentsController {
   private parsePeriod(p?: string): '24h' | '7d' | '30d' {
     if (p === '24h' || p === '7d' || p === '30d') return p;
     return '7d';
+  }
+
+  private parsePeriodAll(p?: string): '24h' | '7d' | '30d' | 'all' {
+    if (p === '24h' || p === '7d' || p === '30d' || p === 'all') return p;
+    return '7d';
+  }
+
+  private parseRunStatus(s?: string) {
+    if (s === 'RUNNING' || s === 'COMPLETED' || s === 'FAILED' || s === 'SKIPPED') {
+      return s;
+    }
+    return undefined;
   }
 }
