@@ -61,6 +61,39 @@ const SYSTEM_TEMPLATE = `Você é <%= it.agent.name %>, atendente virtual da <%=
 - Mensagens curtas. Uma ideia por mensagem.
 - NUNCA invente informações. Se não souber, peça mais info ao cliente.
 
+═══ USO DE SKILLS — REGRAS DE OURO (CRÍTICO) ═══
+Skills que executam ações irreversíveis (liberar acesso, processar pagamento,
+disparar email, criar conta, atribuir produto) seguem regras estritas. NUNCA
+quebre essas regras — uma falha aqui custa cliente real e dinheiro real.
+
+1. **USE OS IDs LITERAIS retornados pela skill anterior.** Se você chamou
+   \`checkPurchase\`/\`lookupOffering\`/qualquer consulta antes, USE EXATAMENTE
+   os slugs/IDs/identificadores que vieram na resposta. NUNCA invente,
+   adivinhe, traduza ou "melhore" o nome. Se a resposta retornou
+   \`offerSlug: "claude-code-aulao-replay"\`, é ESSE valor que entra no
+   próximo grantAccess — não "Replay do Aulão Claude Code".
+
+2. **Quando a skill retornar erro 4xx (404 Not Found, 400 Bad Request,
+   ambiguidade), PARE.** Não tente outro chute, não invente outro nome.
+   Use \`replyToConversation\` pra explicar pro cliente que vai verificar
+   manualmente, e \`transferToHuman\` com o motivo no campo \`reason\`
+   ("falhei ao executar X porque a API retornou Y").
+
+3. **Quando a skill consultiva (checkPurchase) retornar UMA LISTA, libere
+   APENAS o que está na lista.** Cliente pode reclamar de "bônus que
+   foram falados", mas só libere o que ele realmente comprou. Se ele
+   pedir algo que não aparece na resposta da skill consultiva, escale
+   pro humano em vez de chutar.
+
+4. **Confirme com o cliente antes de executar ações irreversíveis em lote.**
+   Se a skill retornou 3 produtos comprados, fale "vou liberar X, Y e Z,
+   pode confirmar?" antes de chamar grantAccess pra cada um.
+
+5. **Retry só pra erro transiente (timeout, 500, 503).** Pra erro 4xx
+   (input ruim, ambiguidade, not found), retry com mesmos parâmetros é
+   inútil — escala. Repetir N vezes com nomes diferentes é o pior padrão
+   possível: ou acerta por coincidência (e libera errado) ou polui logs.
+
 ═══ Como você fala (CRÍTICO — leia 2x) ═══
 Você está num WhatsApp/Instagram. Pessoas leem em pé, no celular, com pressa. Texto longo vai pra lixo sem ser lido.
 
@@ -328,7 +361,51 @@ export class PromptBuilderService {
       return '[áudio sem transcrição — peça pro cliente repetir por texto]';
     }
 
-    if (message.type !== 'TEXT') return `[${message.type.toLowerCase()}]`;
+    // Template messages (broadcast com botão, lista, mídia + CTA): o body
+    // real fica em content.template.text/header/footer. Sem extrair, o
+    // LLM via "[template]" no histórico e literalmente não enxergava o
+    // que o bot/operador acabou de mandar — gerava "vc tá falando do quê?"
+    // mesmo com link no broadcast anterior.
+    if (message.type === 'TEMPLATE') {
+      const tpl = (content?.template ?? {}) as Record<string, any>;
+      const body =
+        typeof tpl.text === 'string' && tpl.text
+          ? tpl.text
+          : typeof tpl.body === 'string' && tpl.body
+            ? tpl.body
+            : null;
+      const header =
+        typeof tpl.header === 'string' && tpl.header ? tpl.header : null;
+      const buttons = Array.isArray(tpl.buttons)
+        ? (tpl.buttons as any[])
+            .map((b) => b?.title || b?.url || b?.payload)
+            .filter(Boolean)
+            .join(' / ')
+        : '';
+      const parts = [header, body].filter(Boolean).join('\n');
+      const buttonsLine = buttons ? `\n[botões: ${buttons}]` : '';
+      if (parts || buttons) return `${prefix}${parts}${buttonsLine}`;
+      return `${prefix}[template sem texto extraído]`;
+    }
+
+    // Image/video/document podem trazer só caption — já tratado acima.
+    // Sem caption nem text, sinaliza explicitamente o tipo (ex:
+    // "[imagem enviada sem legenda]") em vez de só "[image]" pra o LLM
+    // entender o contexto.
+    if (message.type === 'IMAGE') return `${prefix}[imagem enviada sem legenda]`;
+    if (message.type === 'VIDEO') return `${prefix}[vídeo enviado sem legenda]`;
+    if (message.type === 'DOCUMENT') {
+      const filename = (content?.fileName as string | undefined) ?? '';
+      return `${prefix}[documento enviado${filename ? ': ' + filename : ''}]`;
+    }
+    if (message.type === 'STICKER') return `${prefix}[sticker]`;
+    if (message.type === 'LOCATION') return `${prefix}[localização compartilhada]`;
+    if (message.type === 'REACTION') {
+      const emoji = (content?.reaction as any)?.emoji ?? '';
+      return `${prefix}[reagiu com ${emoji}]`;
+    }
+
+    if (message.type !== 'TEXT') return `${prefix}[${message.type.toLowerCase()}]`;
     return '';
   }
 
