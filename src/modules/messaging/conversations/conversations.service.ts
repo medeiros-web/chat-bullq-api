@@ -387,6 +387,46 @@ export class ConversationsService {
     return updated;
   }
 
+  /**
+   * Hard delete — apaga a conversa de verdade. Cascade nas FKs (messages,
+   * tags, audit logs, AI runs, reads, internal notes, rating, cards) cuida
+   * dos dependentes. Operação irreversível: exige confirmação digitando o
+   * nome ou telefone exato do contato.
+   */
+  async hardDelete(
+    id: string,
+    organizationId: string,
+    access: ChannelAccess = 'ALL',
+    confirm?: string,
+  ) {
+    const conversation = await this.findOne(id, organizationId, access);
+    const expectedName = (conversation as any).contact?.name?.trim();
+    const expectedPhone = (conversation as any).contact?.phone?.trim();
+    const provided = (confirm ?? '').trim();
+    if (!provided) {
+      throw new BadRequestException(
+        'Confirmação obrigatória: passe ?confirm=<nome ou telefone exato do contato>.',
+      );
+    }
+    if (provided !== expectedName && provided !== expectedPhone) {
+      throw new BadRequestException(
+        'Confirmação não confere com o nome ou telefone do contato — apagamento abortado.',
+      );
+    }
+
+    // FKs estão com onDelete: Cascade nos relacionados (messages,
+    // conversation_tags, ai_agent_runs, conversation_reads, etc.) então
+    // basta apagar a conversa que o resto cai junto.
+    await this.prisma.conversation.delete({ where: { id } });
+
+    this.realtimeGateway.emitToChannel(
+      conversation.channelId,
+      'conversation:deleted',
+      { conversationId: id },
+    );
+    return { ok: true, id };
+  }
+
   async setArchived(
     id: string,
     organizationId: string,
