@@ -46,13 +46,21 @@ export class ChannelsService {
       name: dto.name,
       config: dto.config,
       webhookSecret: dto.webhookSecret,
+      ...(dto.visibility ? { visibility: dto.visibility } : {}),
     });
 
     // Deny-by-default: a brand new channel has no agents, so AGENT users in the
     // org cannot see it. The creator gets an explicit grant only if they are
     // an AGENT (OWNER/ADMIN bypass via role); admins manage other agents'
     // access via the channel-access endpoints.
-    if (creator && creator.role === OrgRole.AGENT) {
+    //
+    // Pra canal PRIVATE, OWNER/ADMIN também precisa de grant — então se o
+    // criador é um deles E o canal é PRIVATE, garantimos o grant pra evitar
+    // que o criador se tranque fora do próprio canal recém-criado.
+    const needsAgentGrant =
+      (creator && creator.role === OrgRole.AGENT) ||
+      (creator && dto.visibility === 'PRIVATE');
+    if (needsAgentGrant && creator) {
       await this.prisma.channelAgent.create({
         data: {
           channelId: channel.id,

@@ -1,4 +1,4 @@
-import { IsEnum, IsString, IsOptional, IsObject } from 'class-validator';
+import { IsEnum, IsString, IsOptional, IsObject, IsIn } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ChannelType } from '@prisma/client';
 
@@ -22,4 +22,9 @@ export class CreateChannelDto {
   @IsOptional()
   @IsString()
   webhookSecret?: string;
+
+  @ApiPropertyOptional({ enum: ['ORG', 'PRIVATE'] })
+  @IsOptional()
+  @IsIn(['ORG', 'PRIVATE'])
+  visibility?: 'ORG' | 'PRIVATE';
 }
