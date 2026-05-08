@@ -79,4 +79,45 @@ export class UpdateOrganizationDto {
   @IsString()
   @MaxLength(4000)
   aiBusinessNotes?: string | null;
+
+  // ─── Watchdog settings ──────────────────────────────────────────
+
+  @ApiPropertyOptional({
+    description:
+      'Liga/desliga o watchdog de conversas presas. Quando ON, varre conversas onde IA travou ou humano abandonou e reativa atendimento.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  watchdogEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Horário em que o watchdog atua. Mesmo formato de `aiBusinessHours`. null = roda 24/7.',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsObject()
+  watchdogBusinessHours?: Record<string, unknown> | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Parâmetros do watchdog: `{ delayBotMin, delayPendingMin, delayHumanIdleMin, maxAttempts }`. null = usa defaults (15, 15, 60, 3).',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsObject()
+  watchdogConfig?: WatchdogConfigDto | null;
+}
+
+export interface WatchdogConfigDto {
+  /// Minutos sem resposta com status=BOT antes de reativar IA.
+  delayBotMin?: number;
+  /// Minutos sem resposta com status=PENDING antes de IA assumir.
+  delayPendingMin?: number;
+  /// Minutos sem resposta com status=OPEN (humano atribuído) antes de IA reassumir.
+  delayHumanIdleMin?: number;
+  /// Tentativas antes de marcar como `isStuck` e parar de tentar IA.
+  maxAttempts?: number;
 }

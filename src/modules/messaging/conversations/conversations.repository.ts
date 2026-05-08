@@ -34,6 +34,12 @@ export interface InboxFilters {
    * returned. Requires `currentUserId` — without it, the flag is a no-op.
    */
   unreadOnly?: boolean;
+  /**
+   * When true, only conversations marked `isStuck=true` pelo watchdog
+   * (excederam `maxAttempts` sem resposta) são retornadas. Útil pro
+   * filtro/widget do dashboard.
+   */
+  stuckOnly?: boolean;
 }
 
 @Injectable()
@@ -120,6 +126,7 @@ export class ConversationsRepository {
       ];
     }
     if (filters.assignedToId) where.assignedToId = filters.assignedToId;
+    if (filters.stuckOnly) where.isStuck = true;
     if (filters.search) {
       where.OR = [
         { contact: { name: { contains: filters.search, mode: 'insensitive' } } },
@@ -269,6 +276,51 @@ export class ConversationsRepository {
         lastReadAt: new Date(),
       },
     });
+  }
+
+  /**
+   * Marks a conversation as unread for a user. Slack/Gmail-style semantics:
+   * we don't reset the entire history — we push `lastReadAt` to right before
+   * the most recent INBOUND message so the badge shows ≥ 1 unread.
+   * If there's no inbound message yet, drop the read row entirely.
+   */
+  async markAsUnread(userId: string, conversationId: string) {
+    const lastInbound = await this.prisma.message.findFirst({
+      where: { conversationId, direction: 'INBOUND' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, createdAt: true },
+    });
+
+    if (!lastInbound) {
+      await this.prisma.conversationRead.deleteMany({
+        where: { userId, conversationId },
+      });
+      return { lastReadAt: null as Date | null, unreadCount: 0 };
+    }
+
+    // 1ms before the last inbound — the count query uses `gt`, so this
+    // makes that single message (and any later ones) count as unread.
+    const newLastReadAt = new Date(lastInbound.createdAt.getTime() - 1);
+    await this.prisma.conversationRead.upsert({
+      where: { userId_conversationId: { userId, conversationId } },
+      create: {
+        userId,
+        conversationId,
+        lastReadMessageId: null,
+        lastReadAt: newLastReadAt,
+      },
+      update: { lastReadMessageId: null, lastReadAt: newLastReadAt },
+    });
+
+    const unreadCount = await this.prisma.message.count({
+      where: {
+        conversationId,
+        direction: 'INBOUND',
+        createdAt: { gt: newLastReadAt },
+      },
+    });
+
+    return { lastReadAt: newLastReadAt, unreadCount };
   }
 
   async findById(id: string) {

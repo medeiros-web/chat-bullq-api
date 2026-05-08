@@ -156,6 +156,19 @@ model Organization {
   /// Default 0.85. Abaixo disso cai no Augusto.
   aiClassifierThreshold Decimal? @default(0.85) @map("ai_classifier_threshold") @db.Decimal(3, 2)
 
+  // ─── Watchdog (conversas presas) ────────────────
+  /// Liga/desliga o watchdog que detecta conversas onde a IA travou ou
+  /// o humano abandonou. Default: true.
+  watchdogEnabled       Boolean @default(true) @map("watchdog_enabled")
+  /// Horário em que o watchdog atua (mesmo formato de `aiBusinessHours`:
+  /// `{monday: {enabled, windows: [["09:00","18:00"]]}, ...}`). null = 24/7.
+  /// Reusa `aiTimezone` pra resolução de fuso.
+  watchdogBusinessHours Json?   @map("watchdog_business_hours")
+  /// Parâmetros do watchdog. Shape:
+  /// `{ delayBotMin, delayPendingMin, delayHumanIdleMin, maxAttempts }`.
+  /// null = usa defaults do código (15, 15, 60, 3).
+  watchdogConfig        Json?   @map("watchdog_config")
+
   members       UserOrganization[]
   channels      Channel[]
   contacts      Contact[]
@@ -421,6 +434,20 @@ model Conversation {
   aiDisabledBy  String?   @map("ai_disabled_by")
   aiDisabledAt  DateTime? @map("ai_disabled_at")
   activeAgentId String?   @map("active_agent_id")
+
+  // ─── Watchdog state ─────────────────────────────
+  /// Tentativas de reativação. Cada vez que o watchdog reaciona a IA na
+  /// conversa, +1. Resetado pra 0 quando IA/humano responde com sucesso.
+  /// Quando atinge `maxAttempts`, a conversa é marcada `isStuck=true`.
+  stuckAttempts        Int       @default(0) @map("stuck_attempts")
+  /// Última vez que o watchdog avaliou a conversa.
+  lastWatchdogCheckAt  DateTime? @map("last_watchdog_check_at")
+  /// ID do job reativo (BullMQ) atualmente agendado pra essa conversa.
+  /// Permite cancelar/substituir o job quando algo muda na conversa.
+  watchdogJobId        String?   @map("watchdog_job_id")
+  /// Bandeira "presa pra valer". Setada quando `stuckAttempts >= maxAttempts`.
+  /// Frontend filtra por isso na inbox e no dashboard.
+  isStuck              Boolean   @default(false) @map("is_stuck")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   channel      Channel      @relation(fields: [channelId], references: [id])

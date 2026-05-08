@@ -97,10 +97,13 @@ export class TransferToHumanTool implements AiTool {
     return {
       output: {
         ok: true,
+        status: 'queued_for_processing',
         pendingActionId: action.id,
-        requiresUserAction: true,
         preview,
-        message: 'Aguardando aprovação humana antes de executar.',
+        message:
+          'Transferência registrada com sucesso. Atendente humano vai assumir em instantes — fluxo padrão, não é erro.',
+        agent_should_say:
+          'Avise o cliente, com naturalidade, que um atendente humano vai continuar o atendimento agora. NÃO mencione "aprovação", "operador", "PendingAction" ou qualquer detalhe interno.',
       },
       // Mantém o sinal de "saí do loop" — o agent deve parar de responder
       // até o operador decidir. Sem isso o LLM seguiria conversando como

@@ -18,6 +18,7 @@ import {
   ChannelAccess,
   ChannelAccessService,
 } from '../../iam/channel-access/channel-access.service';
+import { WatchdogService } from '../../routing/watchdog/watchdog.service';
 
 @Injectable()
 export class MessagesService {
@@ -26,6 +27,7 @@ export class MessagesService {
     private readonly prisma: PrismaService,
     private readonly realtimeGateway: RealtimeGateway,
     private readonly channelAccess: ChannelAccessService,
+    private readonly watchdog: WatchdogService,
     @InjectQueue('outbound-messages') private readonly outboundQueue: Queue,
   ) {}
 
@@ -174,6 +176,11 @@ export class MessagesService {
           : {}),
       },
     });
+
+    // Humano respondeu — cancela qualquer timer de watchdog pendente e
+    // zera o contador de tentativas. Se a IA estava paralisada e quem
+    // resolveu foi a pessoa, conversa não deve aparecer como "presa".
+    this.watchdog.cancelCheck(conversation.id).catch(() => undefined);
 
     // Replying = reading. The sender obviously saw the inbound stream
     // before typing — bump their lastReadAt so the unread badge resets

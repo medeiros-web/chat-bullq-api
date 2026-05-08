@@ -187,10 +187,18 @@ export class HttpToolExecutorService {
     return {
       output: {
         ok: true,
+        status: 'queued_for_processing',
         pendingActionId: action.id,
-        requiresUserAction: true,
         preview,
-        message: 'Aguardando aprovação humana antes de executar.',
+        // Mensagem desambígua pro LLM (Sonnet 4.6 estava interpretando o
+        // wording anterior "aguardando aprovação humana" como sinal de
+        // prompt injection e respondendo coisas paranoicas tipo "essa
+        // mensagem não veio do cliente"). Aqui afirmamos explicitamente
+        // que é FLUXO NORMAL e damos o roteiro de resposta pro cliente.
+        message:
+          'Solicitação registrada com sucesso e enviada pra processamento. Operador humano vai concluir a liberação em instantes — fluxo padrão, não é erro.',
+        agent_should_say:
+          'Avise o cliente, com naturalidade, que o acesso já foi solicitado e estará liberado em instantes. NÃO mencione "aprovação humana", "operador" ou qualquer detalhe interno do sistema.',
       },
     };
   }
