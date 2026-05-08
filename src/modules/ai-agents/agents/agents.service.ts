@@ -572,6 +572,120 @@ export class AgentsService {
     return (agg._sum.inputTokens ?? 0) + (agg._sum.outputTokens ?? 0);
   }
 
+  // ─── Watchdog stats (monitoramento de conversas presas) ──────────
+
+  /**
+   * Snapshot completo do watchdog pra a UI Jarvis → Watchdog. Retorna:
+   *   - config atual (enabled, thresholds)
+   *   - KPIs (timers ativos, checks 24h, reativações, presas)
+   *   - lista das conversas com stuck_attempts > 0 (em alerta)
+   *   - últimas conversas que entraram em isStuck=true (precisam atenção)
+   */
+  async watchdogStats(organizationId: string) {
+    const org = await this.prisma.organization.findUniqueOrThrow({
+      where: { id: organizationId },
+      select: {
+        watchdogEnabled: true,
+        watchdogConfig: true,
+        watchdogBusinessHours: true,
+        aiTimezone: true,
+      },
+    });
+
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const [
+      activeTimers,
+      checks24h,
+      reactivations,
+      stuck,
+      topAlert,
+      recentStuck,
+    ] = await Promise.all([
+      this.prisma.conversation.count({
+        where: {
+          organizationId,
+          deletedAt: null,
+          watchdogJobId: { not: null },
+        },
+      }),
+      this.prisma.conversation.count({
+        where: {
+          organizationId,
+          deletedAt: null,
+          lastWatchdogCheckAt: { gte: since24h },
+        },
+      }),
+      this.prisma.conversation.aggregate({
+        where: {
+          organizationId,
+          deletedAt: null,
+          lastWatchdogCheckAt: { gte: since24h },
+          stuckAttempts: { gt: 0 },
+        },
+        _sum: { stuckAttempts: true },
+      }),
+      this.prisma.conversation.count({
+        where: { organizationId, deletedAt: null, isStuck: true },
+      }),
+      this.prisma.conversation.findMany({
+        where: {
+          organizationId,
+          deletedAt: null,
+          stuckAttempts: { gt: 0 },
+          isStuck: false,
+        },
+        orderBy: [{ stuckAttempts: 'desc' }, { lastWatchdogCheckAt: 'desc' }],
+        take: 15,
+        select: {
+          id: true,
+          status: true,
+          stuckAttempts: true,
+          lastWatchdogCheckAt: true,
+          watchdogJobId: true,
+          updatedAt: true,
+          contact: { select: { id: true, name: true, phone: true } },
+          channel: { select: { id: true, name: true, type: true } },
+        },
+      }),
+      this.prisma.conversation.findMany({
+        where: { organizationId, deletedAt: null, isStuck: true },
+        orderBy: { lastWatchdogCheckAt: 'desc' },
+        take: 10,
+        select: {
+          id: true,
+          status: true,
+          stuckAttempts: true,
+          lastWatchdogCheckAt: true,
+          updatedAt: true,
+          contact: { select: { id: true, name: true, phone: true } },
+          channel: { select: { id: true, name: true, type: true } },
+        },
+      }),
+    ]);
+
+    return {
+      enabled: org.watchdogEnabled,
+      config: {
+        delayBotMin: 15,
+        delayPendingMin: 15,
+        delayHumanIdleMin: 60,
+        maxAttempts: 3,
+        ...((org.watchdogConfig as Record<string, number> | null) ?? {}),
+      },
+      businessHours: org.watchdogBusinessHours,
+      timezone: org.aiTimezone,
+      stats: {
+        activeTimers,
+        checks24h,
+        reactivations24h: reactivations._sum.stuckAttempts ?? 0,
+        stuck,
+      },
+      topAlert,
+      recentStuck,
+    };
+  }
+
   // ─── Skills do agent + gating de aprovação ───────────────────────
 
   /**

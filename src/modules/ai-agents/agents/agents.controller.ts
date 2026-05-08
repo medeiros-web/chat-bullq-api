@@ -88,6 +88,15 @@ export class AgentsController {
     return this.service.unassignChannel(orgId, id, channelId);
   }
 
+  @Get('watchdog/stats')
+  @ApiOperation({
+    summary:
+      'Snapshot do watchdog: KPIs (timers ativos, checks 24h, reativações, presas) + listas de conversas em alerta',
+  })
+  watchdogStats(@CurrentOrg('id') orgId: string) {
+    return this.service.watchdogStats(orgId);
+  }
+
   @Get(':id/skills')
   @ApiOperation({
     summary: 'List skills attached to this agent (with requiresApproval flag)',
