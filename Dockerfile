@@ -14,4 +14,4 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
 EXPOSE 3001
-CMD ["node", "dist/src/main"]
+CMD ["/bin/sh", "-c", "npx prisma migrate deploy && exec node dist/src/main"]
