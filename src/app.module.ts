@@ -23,6 +23,7 @@ import { InboxViewsModule } from './modules/inbox-views/inbox-views.module';
 import { PipelinesModule } from './modules/pipelines/pipelines.module';
 import { AutomationsModule } from './modules/automations/automations.module';
 import { XquadsModule } from './modules/xquads/xquads.module';
+import { SettingsModule } from './modules/settings/settings.module';
 // ProductsModule removido — catálogo agora vive no Trivapp e é consumido
 // via skill HTTP getProductPitch + CatalogSyncService. Tabela `products`
 // fica órfã no DB (cleanup futuro). Não importar aqui.
@@ -65,6 +66,7 @@ import redisConfig from './config/redis.config';
     InboxViewsModule,
     PipelinesModule,
     XquadsModule,
+    SettingsModule,
   ],
 })
 export class AppModule {}
